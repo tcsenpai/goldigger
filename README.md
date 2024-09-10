@@ -51,7 +51,7 @@ The tool allows for customization through command-line arguments, including:
 
 This tool is designed for educational and research purposes. Stock market prediction is inherently uncertain, and past performance does not guarantee future results. Always consult with a financial advisor before making investment decisions.
 
-## Installation
+## Installation and Usage
 
 ### Using uv
 
@@ -79,6 +79,23 @@ pip install -r requirements.txt
 python goldigger.py
 ```
 
+### Arguments
+
+Note: Use 
+
+The tool supports the following command-line arguments:
+
+- `--symbol`: Stock symbol to analyze (default: 'MSFT')
+- `--start_date`: Start date for historical data (default: '2018-01-01')
+- `--future_days`: Number of days to predict into the future (default: 30)
+- `--quick_test`: Run a quick test with reduced data and iterations (default: False)
+- `--suppress_warnings`: Suppress warning messages (default: False)
+
+Example usage:
+
+```bash
+python goldigger.py --symbol GOOGL --start_date 2015-01-01 --future_days 60 --quick_test
+```
 
 ## Contributing
 
