@@ -296,7 +296,12 @@ def calculate_ensemble_weights(models, X, y):
     for name, model in models:
         _, _, score, _ = train_and_evaluate_model(model, X, y, n_splits=5, model_name=name)
         weights.append(max(score, 0))  # Ensure non-negative weights
-    return [w / sum(weights) for w in weights]  # Normalize weights
+    
+    if sum(weights) == 0:
+        # If all weights are zero, use equal weights
+        return [1/len(weights)] * len(weights)
+    else:
+        return [w / sum(weights) for w in weights]  # Normalize weights
 
 def augment_data(X, y, noise_level=0.01):
     X_aug = X.copy()
@@ -324,6 +329,11 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
 
     features = ['Close', 'Volume', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'BB_upper', 'BB_middle', 'BB_lower', 'Volatility', 'Price_Change', 'Volume_Change', 'High_Low_Range']
     X, y, scaler = prepare_data(data[features])
+
+    # Augment data
+    X_aug, y_aug = augment_data(X, y)
+    X = np.concatenate((X, X_aug), axis=0)
+    y = np.concatenate((y, y_aug), axis=0)
 
     # Split data into training and testing sets
     X_train, X_test, y_train, y_test = time_based_train_test_split(X, y, test_size=0.2)
