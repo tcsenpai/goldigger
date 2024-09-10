@@ -5,7 +5,7 @@ from sklearn.model_selection import TimeSeriesSplit, cross_val_score, Randomized
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, r2_score
 from tensorflow.keras.models import Sequential, clone_model as keras_clone_model
-from tensorflow.keras.layers import LSTM, Dense, GRU
+from tensorflow.keras.layers import LSTM, Dense, GRU, Dropout
 from tensorflow.keras.callbacks import Callback, EarlyStopping
 from datetime import datetime, timedelta
 from tqdm.auto import tqdm
@@ -96,7 +96,9 @@ def prepare_data(data, look_back=60):
 def create_lstm_model(input_shape):
     model = Sequential([
         LSTM(units=64, return_sequences=True, input_shape=input_shape, kernel_regularizer=l1_l2(l1=1e-5, l2=1e-4)),
+        Dropout(0.2),  # Add dropout layer
         LSTM(units=32, kernel_regularizer=l1_l2(l1=1e-5, l2=1e-4)),
+        Dropout(0.2),  # Add dropout layer
         Dense(units=16, activation='relu', kernel_regularizer=l1_l2(l1=1e-5, l2=1e-4)),
         Dense(units=1)
     ])
@@ -107,7 +109,9 @@ def create_lstm_model(input_shape):
 def create_gru_model(input_shape):
     model = Sequential([
         GRU(units=64, return_sequences=True, input_shape=input_shape, kernel_regularizer=l1_l2(l1=1e-5, l2=1e-4)),
+        Dropout(0.2),  # Add dropout layer
         GRU(units=32, kernel_regularizer=l1_l2(l1=1e-5, l2=1e-4)),
+        Dropout(0.2),  # Add dropout layer
         Dense(units=16, activation='relu', kernel_regularizer=l1_l2(l1=1e-5, l2=1e-4)),
         Dense(units=1)
     ])
