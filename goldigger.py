@@ -20,6 +20,7 @@ from tabulate import tabulate
 from scipy.stats import randint, uniform
 import sklearn.base
 import argparse
+from sklearn.feature_selection import SelectKBest, f_regression
 
 # Suppress warnings and TensorFlow logging
 def suppress_warnings_method():
@@ -80,9 +81,9 @@ def prepare_data(data, look_back=60):
     scaled_data = scaler.fit_transform(data)
     
     X, y = [], []
-    for i in range(look_back, len(scaled_data)):
+    for i in range(look_back, len(scaled_data)-1):  # Note the -1 here
         X.append(scaled_data[i-look_back:i])
-        y.append(scaled_data[i, 0])  # Predicting the 'Close' price
+        y.append(scaled_data[i+1, 0])  # Predicting the next 'Close' price
     
     return np.array(X), np.array(y), scaler
 
@@ -124,7 +125,10 @@ def train_and_evaluate_model(model, X, y, n_splits=5, model_name="Model"):
                 X_val_2d = X_val.reshape(X_val.shape[0], -1)
                 cloned_model = sklearn.base.clone(model)
                 cloned_model.fit(X_train_2d, y_train)
-                val_pred = cloned_model.predict(X_val_2d)
+                val_pred = []
+                for i in range(len(X_val_2d)):
+                    pred = cloned_model.predict(X_val_2d[i:i+1])
+                    val_pred.append(pred[0])
                 oof_predictions[val_index] = val_pred
             elif isinstance(model, Sequential):
                 cloned_model = keras_clone_model(model)
@@ -166,8 +170,8 @@ def weighted_ensemble_predict(models, X, weights):
         if isinstance(model, (RandomForestRegressor, XGBRegressor)):
             pred = model.predict(X.reshape(X.shape[0], -1))
         else:
-            pred = model.predict(X)
-        predictions.append(weight * pred.flatten())
+            pred = np.array([model.predict(X[i:i+1])[0][0] for i in range(len(X))])
+        predictions.append(weight * pred)
     return np.sum(predictions, axis=0)
 
 # Calculate risk metrics (Sharpe ratio and max drawdown)
@@ -221,15 +225,18 @@ def tune_random_forest(X, y, quick_test=False):
             'n_estimators': randint(100, 500),
             'max_depth': randint(5, 50),
             'min_samples_split': randint(2, 20),
-            'min_samples_leaf': randint(1, 10)
+            'min_samples_leaf': randint(1, 10),
+            'max_features': ['auto', 'sqrt', 'log2'],
+            'bootstrap': [True, False]
         }
         n_iter = 20
 
     # Initialize Random Forest model
     rf = RandomForestRegressor(random_state=42)
     # Perform randomized search for best parameters
+    tscv = TimeSeriesSplit(n_splits=5)
     rf_random = RandomizedSearchCV(estimator=rf, param_distributions=param_dist, 
-                                   n_iter=n_iter, cv=3 if quick_test else 5, 
+                                   n_iter=n_iter, cv=tscv, 
                                    verbose=2, random_state=42, n_jobs=-1)
     rf_random.fit(X.reshape(X.shape[0], -1), y)
     print(f"Best Random Forest parameters: {rf_random.best_params_}")
@@ -251,15 +258,18 @@ def tune_xgboost(X, y, quick_test=False):
             'n_estimators': randint(100, 500),
             'max_depth': randint(3, 10),
             'learning_rate': uniform(0.01, 0.3),
-            'subsample': uniform(0.6, 0.4)
+            'subsample': uniform(0.6, 1.0),
+            'colsample_bytree': uniform(0.6, 1.0),
+            'gamma': uniform(0, 5)
         }
         n_iter = 20
 
     # Initialize XGBoost model
     xgb = XGBRegressor(random_state=42)
     # Perform randomized search for best parameters
+    tscv = TimeSeriesSplit(n_splits=5)
     xgb_random = RandomizedSearchCV(estimator=xgb, param_distributions=param_dist, 
-                                    n_iter=n_iter, cv=3 if quick_test else 5, 
+                                    n_iter=n_iter, cv=tscv, 
                                     verbose=2, random_state=42, n_jobs=-1)
     xgb_random.fit(X.reshape(X.shape[0], -1), y)
     print(f"Best XGBoost parameters: {xgb_random.best_params_}")
@@ -277,6 +287,25 @@ def implement_trading_strategy(actual_prices, predicted_prices, threshold=0.01):
         actual_return = (actual_prices[i] - actual_prices[i-1]) / actual_prices[i-1]
         returns.append(position * actual_return)
     return np.array(returns)
+
+def select_features(X, y, k=10):
+    selector = SelectKBest(score_func=f_regression, k=k)
+    X_selected = selector.fit_transform(X.reshape(X.shape[0], -1), y)
+    selected_features = selector.get_support(indices=True)
+    return X_selected, selected_features
+
+def calculate_ensemble_weights(models, X_val, y_val):
+    weights = []
+    for name, model in models:
+        if isinstance(model, (RandomForestRegressor, XGBRegressor)):
+            pred = model.predict(X_val.reshape(X_val.shape[0], -1))
+        elif isinstance(model, Sequential):
+            pred = model.predict(X_val)
+        else:
+            raise ValueError(f"Unsupported model type: {type(model)}")
+        score = r2_score(y_val, pred)
+        weights.append(max(score, 0))  # Ensure non-negative weights
+    return [w / sum(weights) for w in weights]  # Normalize weights
 
 # Main function to analyze stock data and make predictions
 def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, suppress_warnings=False, quick_test=False):
@@ -317,7 +346,7 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
         for name, model in models:
             print(f"\nTraining and evaluating {name} model...")
             cv_score, cv_std, overall_score, oof_pred = train_and_evaluate_model(model, X, y, n_splits=3 if quick_test else 5, model_name=name)
-            print(f"{name} model results:")
+            print(f" {name} model results:")
             print(f"  Cross-validation R² score: {cv_score:.4f} (±{cv_std:.4f})")
             print(f"  Overall out-of-fold R² score: {overall_score:.4f}")
             
@@ -358,8 +387,9 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
     print(tabulate(stats_df, headers='keys', tablefmt='pretty', floatfmt='.4f'))
 
     # Use out-of-fold predictions for ensemble
-    model_weights = [0.3, 0.3, 0.2, 0.2]  # Adjust these based on model performance
-    ensemble_predictions = weighted_ensemble_predict([model for _, model in models], X, model_weights)
+    ensemble_weights = calculate_ensemble_weights(models, X_test, y_test)
+    print(f"Ensemble weights: {ensemble_weights}")
+    ensemble_predictions = weighted_ensemble_predict([model for _, model in models], X, ensemble_weights)
     
     # Predict future data
     future_predictions = []
