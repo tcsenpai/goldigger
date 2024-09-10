@@ -139,7 +139,9 @@ def walk_forward_validation(X, y, model, n_splits=5):
             model.fit(X_train_2d, y_train)
             predictions = model.predict(X_test_2d)
         elif isinstance(model, Sequential):
-            model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
+            early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+            model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0, 
+                      validation_split=0.2, callbacks=[early_stopping])
             predictions = model.predict(X_test).flatten()
         
         all_predictions.extend(predictions)
