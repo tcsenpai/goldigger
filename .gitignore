@@ -1,3 +1,4 @@
 *.png
 .venv
 src
+.vscode
