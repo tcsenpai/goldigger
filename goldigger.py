@@ -6,7 +6,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, r2_score
 from tensorflow.keras.models import Sequential, clone_model as keras_clone_model
 from tensorflow.keras.layers import LSTM, Dense, GRU
-from tensorflow.keras.callbacks import Callback
+from tensorflow.keras.callbacks import Callback, EarlyStopping
 from datetime import datetime, timedelta
 from tqdm.auto import tqdm
 import yfinance as yf
@@ -64,6 +64,11 @@ def add_technical_indicators(data):
     data['RSI'] = ta.momentum.rsi(data['Close'], window=14)
     data['MACD'] = ta.trend.macd_diff(data['Close'])
     data['BB_upper'], data['BB_middle'], data['BB_lower'] = ta.volatility.bollinger_hband_indicator(data['Close']), ta.volatility.bollinger_mavg(data['Close']), ta.volatility.bollinger_lband_indicator(data['Close'])
+    # Advanced indicators
+    data['EMA_20'] = ta.trend.ema_indicator(data['Close'], window=20)
+    data['ATR'] = ta.volatility.average_true_range(data['High'], data['Low'], data['Close'])
+    data['ADX'] = ta.trend.adx(data['High'], data['Low'], data['Close'])
+    data['Stoch_K'] = ta.momentum.stoch(data['High'], data['Low'], data['Close'])
     return data
 
 # Prepare data for model training by scaling and creating sequences
@@ -84,8 +89,9 @@ def prepare_data(data, look_back=60):
 # Create an LSTM model for time series prediction
 def create_lstm_model(input_shape):
     model = Sequential([
-        LSTM(units=50, return_sequences=True, input_shape=input_shape),
-        LSTM(units=50),
+        LSTM(units=64, return_sequences=True, input_shape=input_shape),
+        LSTM(units=32),
+        Dense(units=16, activation='relu'),
         Dense(units=1)
     ])
     model.compile(optimizer='adam', loss='mean_squared_error')
@@ -94,30 +100,26 @@ def create_lstm_model(input_shape):
 # Create a GRU model for time series prediction
 def create_gru_model(input_shape):
     model = Sequential([
-        GRU(units=50, return_sequences=True, input_shape=input_shape),
-        GRU(units=50),
+        GRU(units=64, return_sequences=True, input_shape=input_shape),
+        GRU(units=32),
+        Dense(units=16, activation='relu'),
         Dense(units=1)
     ])
     model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
+    return model    
 
 # Train and evaluate a model using time series cross-validation
 def train_and_evaluate_model(model, X, y, n_splits=5, model_name="Model"):
-    # Initialize time series cross-validation
     tscv = TimeSeriesSplit(n_splits=n_splits)
     scores = []
     oof_predictions = np.zeros_like(y)
     
-    # Iterate through each fold
     with tqdm(total=n_splits, desc=f"Training {model_name}", leave=False) as pbar:
         for fold, (train_index, val_index) in enumerate(tscv.split(X), 1):
-            # Split data into training and validation sets
             X_train, X_val = X[train_index], X[val_index]
             y_train, y_val = y[train_index], y[val_index]
             
-            # Handle different model types (sklearn models vs Keras models)
             if isinstance(model, (RandomForestRegressor, XGBRegressor)):
-                # For sklearn models
                 X_train_2d = X_train.reshape(X_train.shape[0], -1)
                 X_val_2d = X_val.reshape(X_val.shape[0], -1)
                 cloned_model = sklearn.base.clone(model)
@@ -125,23 +127,25 @@ def train_and_evaluate_model(model, X, y, n_splits=5, model_name="Model"):
                 val_pred = cloned_model.predict(X_val_2d)
                 oof_predictions[val_index] = val_pred
             elif isinstance(model, Sequential):
-                # For Keras models (LSTM and GRU)
                 cloned_model = keras_clone_model(model)
                 cloned_model.compile(optimizer='adam', loss='mean_squared_error')
+                early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
                 cloned_model.fit(X_train, y_train, epochs=100, batch_size=32, validation_data=(X_val, y_val), verbose=0, 
-                                callbacks=[TqdmProgressCallback(100, f"{model_name} Epoch {fold}/{n_splits}")])
-                val_pred = cloned_model.predict(X_val)
-                oof_predictions[val_index] = val_pred.flatten()
+                                callbacks=[TqdmProgressCallback(100, f"{model_name} Epoch {fold}/{n_splits}"), early_stopping])
+                
+                # Predict one step ahead for each sample in the validation set
+                val_pred = []
+                for i in range(len(X_val)):
+                    pred = cloned_model.predict(X_val[i:i+1])
+                    val_pred.append(pred[0][0])
+                oof_predictions[val_index] = val_pred
             else:
-                # Raise error for unsupported model types
                 raise ValueError(f"Unsupported model type: {type(model)}")
             
-            # Calculate and store the score for this fold
             score = r2_score(y_val, val_pred)
             scores.append(score)
             pbar.update(1)
     
-    # Calculate overall score and return results
     overall_score = r2_score(y, oof_predictions)
     return np.mean(scores), np.std(scores), overall_score, oof_predictions
 
@@ -155,6 +159,16 @@ def ensemble_predict(models, X):
             pred = model.predict(X)
         predictions.append(pred.flatten())  # Flatten the predictions
     return np.mean(predictions, axis=0)
+
+def weighted_ensemble_predict(models, X, weights):
+    predictions = []
+    for model, weight in zip(models, weights):
+        if isinstance(model, (RandomForestRegressor, XGBRegressor)):
+            pred = model.predict(X.reshape(X.shape[0], -1))
+        else:
+            pred = model.predict(X)
+        predictions.append(weight * pred.flatten())
+    return np.sum(predictions, axis=0)
 
 # Calculate risk metrics (Sharpe ratio and max drawdown)
 def calculate_risk_metrics(returns):
@@ -251,6 +265,19 @@ def tune_xgboost(X, y, quick_test=False):
     print(f"Best XGBoost parameters: {xgb_random.best_params_}")
     return xgb_random.best_estimator_
 
+def implement_trading_strategy(actual_prices, predicted_prices, threshold=0.01):
+    returns = []
+    position = 0  # -1: short, 0: neutral, 1: long
+    for i in range(1, len(actual_prices)):
+        predicted_return = (predicted_prices[i] - actual_prices[i-1]) / actual_prices[i-1]
+        if predicted_return > threshold and position <= 0:
+            position = 1  # Buy
+        elif predicted_return < -threshold and position >= 0:
+            position = -1  # Sell
+        actual_return = (actual_prices[i] - actual_prices[i-1]) / actual_prices[i-1]
+        returns.append(position * actual_return)
+    return np.array(returns)
+
 # Main function to analyze stock data and make predictions
 def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, suppress_warnings=False, quick_test=False):
     # Suppress warnings if flag is set
@@ -331,7 +358,8 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
     print(tabulate(stats_df, headers='keys', tablefmt='pretty', floatfmt='.4f'))
 
     # Use out-of-fold predictions for ensemble
-    ensemble_predictions = np.mean([oof_predictions[name] for name in results.keys()], axis=0)
+    model_weights = [0.3, 0.3, 0.2, 0.2]  # Adjust these based on model performance
+    ensemble_predictions = weighted_ensemble_predict([model for _, model in models], X, model_weights)
     
     # Predict future data
     future_predictions = []
@@ -354,11 +382,16 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
     print(f"Sharpe Ratio: {sharpe_ratio:.4f}")
     print(f"Max Drawdown: {max_drawdown:.4f}")
 
+    # Implement trading strategy
+    strategy_returns = implement_trading_strategy(data['Close'].values[-len(ensemble_predictions):], ensemble_predictions.flatten())
+    strategy_sharpe_ratio = np.mean(strategy_returns) / np.std(strategy_returns) * np.sqrt(252)
+    print(f"Trading Strategy Sharpe Ratio: {strategy_sharpe_ratio:.4f}")
+
     # Plot results
-    plt.figure(figsize=(20, 16))  # Increased figure height
+    plt.figure(figsize=(20, 24))  # Increased figure height
     
     # Price prediction plot
-    plt.subplot(2, 1, 1)
+    plt.subplot(3, 1, 1)
     plot_data = data.iloc[-len(ensemble_predictions):]
     future_dates = pd.date_range(start=plot_data.index[-1] + pd.Timedelta(days=1), periods=future_days)
     
@@ -372,7 +405,7 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
     plt.legend()
 
     # Model performance summary table
-    plt.subplot(2, 1, 2)
+    plt.subplot(3, 1, 2)
     plt.axis('off')
     table = plt.table(cellText=stats_df.values,
                       colLabels=stats_df.columns,
@@ -385,9 +418,24 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
     # Lower the title and add more space between plot and table
     plt.title('Model Performance Summary', pad=60)
 
+    # Calculate cumulative returns of the trading strategy
+    cumulative_returns = (1 + strategy_returns).cumprod() - 1
+
+    # Add new subplot for trading strategy performance
+    plt.subplot(3, 1, 3)
+    plt.plot(plot_data.index[-len(cumulative_returns):], cumulative_returns, label='Strategy Cumulative Returns', color='purple')
+    plt.title(f'{symbol} Trading Strategy Performance')
+    plt.xlabel('Date')
+    plt.ylabel('Cumulative Returns')
+    plt.legend()
+
+    # Add strategy Sharpe ratio as text on the plot
+    plt.text(0.05, 0.95, f'Strategy Sharpe Ratio: {strategy_sharpe_ratio:.4f}', 
+             transform=plt.gca().transAxes, verticalalignment='top')
+
     plt.tight_layout()
-    plt.savefig(f'{symbol}_prediction_with_stats.png', dpi=300, bbox_inches='tight')
-    print(f"Plot with statistics saved as '{symbol}_prediction_with_stats.png'")
+    plt.savefig(f'{symbol}_prediction_with_stats_and_strategy.png', dpi=300, bbox_inches='tight')
+    print(f"Plot with statistics and strategy performance saved as '{symbol}_prediction_with_stats_and_strategy.png'")
     plt.show()
 
     print(f"\nFuture predictions for the next {future_days} days:")

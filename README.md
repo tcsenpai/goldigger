@@ -11,26 +11,40 @@ goldigger is a sophisticated Python-based tool designed for stock price predicti
 
 ## Features
 
+
 - **Data Fetching**: Automatically retrieves historical stock data from Yahoo Finance.
 - **Technical Indicators**: Calculates and incorporates various technical indicators for enhanced analysis.
 - **Multiple ML Models**: Utilizes LSTM, GRU, Random Forest, and XGBoost models for prediction.
-- **Ensemble Prediction**: Combines predictions from multiple models for improved accuracy.
+- **Ensemble Prediction**: Combines predictions from multiple models using a weighted approach for improved accuracy.
 - **Hyperparameter Tuning**: Implements randomized search for optimizing Random Forest and XGBoost models.
 - **Time Series Cross-Validation**: Ensures robust model evaluation respecting temporal order of data.
 - **Risk Metrics**: Calculates Sharpe ratio and maximum drawdown for risk assessment.
 - **Future Price Prediction**: Forecasts stock prices for a specified number of future days.
-- **Visualization**: Generates plots showing actual prices, predictions, and future forecasts.
+- **Visualization**: Generates plots showing actual prices, predictions, future forecasts, and trading strategy performance.
 - **Performance Summary**: Provides a detailed table of model performance metrics.
+- **Trading Strategy**: Implements a simple trading strategy based on predictions and calculates its performance.
+
 
 ## Key Components
 
 1. **Data Preparation**: Fetches stock data, adds technical indicators, and prepares sequences for model input.
-2. **Model Creation**: Implements LSTM, GRU, Random Forest, and XGBoost models.
-3. **Model Training and Evaluation**: Uses time series cross-validation for robust performance assessment.
+2. **Model Creation**: Implements LSTM, GRU, Random Forest, and XGBoost models with optimized architectures.
+3. **Model Training and Evaluation**: Uses time series cross-validation for robust performance assessment, including one-step-ahead predictions for LSTM and GRU models.
 4. **Hyperparameter Tuning**: Optimizes Random Forest and XGBoost models using randomized search.
-5. **Ensemble Prediction**: Combines predictions from all models for final forecast.
+5. **Ensemble Prediction**: Combines predictions from all models using a weighted approach for final forecast.
 6. **Risk Analysis**: Calculates key risk metrics for informed decision-making.
-7. **Visualization**: Plots results and generates a performance summary table.
+7. **Trading Strategy**: Implements a simple trading strategy based on model predictions.
+8. **Visualization**: Plots results, generates a performance summary table, and displays trading strategy performance.
+
+## Recent Enhancements
+
+- Improved LSTM and GRU architectures for better efficiency.
+- Implemented early stopping for neural networks to prevent overfitting.
+- Added more technical indicators for enhanced feature engineering.
+- Introduced a weighted ensemble method for combining model predictions.
+- Implemented a simple trading strategy based on predictions.
+- Enhanced visualization to include trading strategy performance.
+
 
 ## Customization
 
