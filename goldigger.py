@@ -120,34 +120,32 @@ def create_gru_model(input_shape):
 
 # Train and evaluate a model using time series cross-validation
 def train_and_evaluate_model(model, X, y, n_splits=5, model_name="Model"):
-    predictions, true_values = walk_forward_validation(X, y, model, n_splits)
-    score = r2_score(true_values, predictions)
-    return score, 0, score, predictions  # Return the same score for consistency
-
-def walk_forward_validation(X, y, model, n_splits=5):
     tscv = TimeSeriesSplit(n_splits=n_splits)
     all_predictions = []
     all_true_values = []
     
-    for train_index, test_index in tscv.split(X):
-        X_train, X_test = X[train_index], X[test_index]
-        y_train, y_test = y[train_index], y[test_index]
-        
-        if isinstance(model, (RandomForestRegressor, XGBRegressor)):
-            X_train_2d = X_train.reshape(X_train.shape[0], -1)
-            X_test_2d = X_test.reshape(X_test.shape[0], -1)
-            model.fit(X_train_2d, y_train)
-            predictions = model.predict(X_test_2d)
-        elif isinstance(model, Sequential):
-            early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-            model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0, 
-                      validation_split=0.2, callbacks=[early_stopping])
-            predictions = model.predict(X_test).flatten()
-        
-        all_predictions.extend(predictions)
-        all_true_values.extend(y_test)
+    with tqdm(total=n_splits, desc=f"Cross-validation for {model_name}", leave=False) as pbar:
+        for train_index, test_index in tscv.split(X):
+            X_train, X_test = X[train_index], X[test_index]
+            y_train, y_test = y[train_index], y[test_index]
+            
+            if isinstance(model, (RandomForestRegressor, XGBRegressor)):
+                X_train_2d = X_train.reshape(X_train.shape[0], -1)
+                X_test_2d = X_test.reshape(X_test.shape[0], -1)
+                model.fit(X_train_2d, y_train)
+                predictions = model.predict(X_test_2d)
+            elif isinstance(model, Sequential):
+                early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+                model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0, 
+                          validation_split=0.2, callbacks=[early_stopping])
+                predictions = model.predict(X_test).flatten()
+            
+            all_predictions.extend(predictions)
+            all_true_values.extend(y_test)
+            pbar.update(1)
     
-    return np.array(all_predictions), np.array(all_true_values)
+    score = r2_score(all_true_values, all_predictions)
+    return score, 0, score, np.array(all_predictions)
 
 # Make predictions using an ensemble of models
 def ensemble_predict(models, X):
@@ -317,41 +315,45 @@ def augment_data(X, y, noise_level=0.01):
     return X_aug, y_aug
 
 # Main function to analyze stock data and make predictions
-def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, suppress_warnings=False, quick_test=False):
+def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, suppress_warnings=False, quick_test=False, models_to_run=['LSTM', 'GRU', 'Random Forest', 'XGBoost']):
     # Suppress warnings if flag is set
     if suppress_warnings:
         suppress_warnings_method()
 
     print(f"Starting analysis for {symbol}...")
 
-    # Fetch and prepare stock data
+    print(f"Fetching stock data for {symbol}...")
     data = fetch_stock_data(symbol, start_date, end_date)
+    print(f"Adding technical indicators...")
     data = add_technical_indicators(data)
     data.dropna(inplace=True)
 
     if quick_test:
-        # Use only the last 100 data points for quick testing
+        print("Quick test mode: Using only the last 100 data points.")
         data = data.tail(100)
 
+    print("Preparing data for model training...")
     features = ['Close', 'Volume', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'BB_upper', 'BB_middle', 'BB_lower', 'Volatility', 'Price_Change', 'Volume_Change', 'High_Low_Range']
     X, y, scaler = prepare_data(data[features])
 
-    # Augment data
+    print("Augmenting data...")
     X_aug, y_aug = augment_data(X, y)
     X = np.concatenate((X, X_aug), axis=0)
     y = np.concatenate((y, y_aug), axis=0)
 
-    # Split data into training and testing sets
+    print("Splitting data into training and testing sets...")
     X_train, X_test, y_train, y_test = time_based_train_test_split(X, y, test_size=0.2)
 
-    # Train and evaluate models
     print("\nStarting model training and hyperparameter tuning...")
-    models = [
-        ("LSTM", create_lstm_model((X.shape[1], X.shape[2]))),
-        ("GRU", create_gru_model((X.shape[1], X.shape[2]))),
-        ("Random Forest", tune_random_forest(X, y, quick_test)),
-        ("XGBoost", tune_xgboost(X, y, quick_test))
-    ]
+    models = []
+    if 'LSTM' in models_to_run:
+        models.append(("LSTM", create_lstm_model((X.shape[1], X.shape[2]))))
+    if 'GRU' in models_to_run:
+        models.append(("GRU", create_gru_model((X.shape[1], X.shape[2]))))
+    if 'Random Forest' in models_to_run:
+        models.append(("Random Forest", tune_random_forest(X, y, quick_test)))
+    if 'XGBoost' in models_to_run:
+        models.append(("XGBoost", tune_xgboost(X, y, quick_test)))
 
     results = {}
     oof_predictions = {}
@@ -364,18 +366,17 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
             print(f"  Cross-validation R² score: {cv_score:.4f} (±{cv_std:.4f})")
             print(f"  Overall out-of-fold R² score: {overall_score:.4f}")
             
-            # Retrain on full dataset
+            print(f"Retraining {name} model on full dataset...")
             if isinstance(model, (RandomForestRegressor, XGBRegressor)):
                 model.fit(X.reshape(X.shape[0], -1), y)
                 train_score = model.score(X.reshape(X.shape[0], -1), y)
             else:
-                history = model.fit(X, y, epochs=100, batch_size=32, verbose=0)
+                history = model.fit(X, y, epochs=100, batch_size=32, verbose=1)
                 train_score = 1 - history.history['loss'][-1]  # Use final training loss as a proxy for R²
             
             results[name] = model
             oof_predictions[name] = oof_pred
             
-            # Calculate overfitting score (difference between train and cv scores)
             overfitting_score = train_score - overall_score
             
             model_stats.append({
@@ -400,38 +401,31 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
     print("\nModel Performance Summary:")
     print(tabulate(stats_df, headers='keys', tablefmt='pretty', floatfmt='.4f'))
 
-    # Use out-of-fold predictions for ensemble
+    print("\nCalculating ensemble weights...")
     ensemble_weights = calculate_ensemble_weights(models, X_test, y_test)
     print(f"Ensemble weights: {ensemble_weights}")
+
+    print("Making ensemble predictions...")
     ensemble_predictions = weighted_ensemble_predict([model for _, model in models], X, ensemble_weights)
     
-    # Predict future data
+    print(f"Predicting future data for the next {future_days} days...")
     future_predictions = []
-    for model in results.values():
+    for name, model in models:
+        print(f"  Making future predictions with {name} model...")
         future_pred = predict_future(model, X[-1], scaler, future_days)
         future_predictions.append(future_pred)
     future_predictions = np.mean(future_predictions, axis=0)
     
-    # Inverse transform the predictions (only for 'Close' price)
+    print("Inverse transforming predictions...")
     close_price_scaler = MinMaxScaler(feature_range=(0, 1))
     close_price_scaler.fit(data['Close'].values.reshape(-1, 1))
     ensemble_predictions = close_price_scaler.inverse_transform(ensemble_predictions.reshape(-1, 1))
     future_predictions = close_price_scaler.inverse_transform(future_predictions.reshape(-1, 1))
 
-    # Calculate returns and risk metrics
-    actual_returns = data['Close'].pct_change().dropna()
-    predicted_returns = pd.Series(ensemble_predictions.flatten()).pct_change().dropna()
+    # Ensure ensemble_predictions matches the length of the actual data
+    ensemble_predictions = ensemble_predictions[-len(data):]
 
-    sharpe_ratio, max_drawdown = calculate_risk_metrics(actual_returns)
-    print(f"Sharpe Ratio: {sharpe_ratio:.4f}")
-    print(f"Max Drawdown: {max_drawdown:.4f}")
-
-    # Implement trading strategy
-    strategy_returns = implement_trading_strategy(data['Close'].values[-len(ensemble_predictions):], ensemble_predictions.flatten())
-    strategy_sharpe_ratio = np.mean(strategy_returns) / np.std(strategy_returns) * np.sqrt(252)
-    print(f"Trading Strategy Sharpe Ratio: {strategy_sharpe_ratio:.4f}")
-
-    # Plot results
+    print("Plotting results...")
     plt.figure(figsize=(20, 24))  # Increased figure height
     
     # Price prediction plot
@@ -461,6 +455,11 @@ def analyze_and_predict_stock(symbol, start_date, end_date, future_days=30, supp
     
     # Lower the title and add more space between plot and table
     plt.title('Model Performance Summary', pad=60)
+
+    # Implement trading strategy
+    strategy_returns = implement_trading_strategy(plot_data['Close'].values, ensemble_predictions.flatten())
+    strategy_sharpe_ratio = np.mean(strategy_returns) / np.std(strategy_returns) * np.sqrt(252)
+    print(f"Trading Strategy Sharpe Ratio: {strategy_sharpe_ratio:.4f}")
 
     # Calculate cumulative returns of the trading strategy
     cumulative_returns = (1 + strategy_returns).cumprod() - 1
